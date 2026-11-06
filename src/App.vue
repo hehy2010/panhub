@@ -17,43 +17,44 @@
     <!-- 公告条 -->
     <div v-if="announcementVisible" class="announce-bar" role="status">
       <span class="announce-bar__icon" aria-hidden="true">📢</span>
-      <div class="announce-bar__viewport">
+      <div ref="viewportEl" class="announce-bar__viewport">
         <span :key="announcementIndex" class="announce-bar__slide">
-          <a
-            v-if="currentAnnouncement?.link"
-            :href="currentAnnouncement.link"
-            target="_blank"
-            rel="noopener">{{ currentAnnouncement.text }}</a>
-          <template v-else>{{ currentAnnouncement?.text }}</template>
+          <span
+            ref="textEl"
+            class="announce-bar__text"
+            :class="{ 'announce-bar__text--scrolling': scrollDistance > 0 }"
+            :style="scrollStyle">
+            <a
+              v-if="currentAnnouncement?.link"
+              :href="currentAnnouncement.link"
+              target="_blank"
+              rel="noopener">{{ currentAnnouncement.text }}</a>
+            <template v-else>{{ currentAnnouncement?.text }}</template>
+          </span>
         </span>
       </div>
       <button class="announce-bar__close" type="button" aria-label="关闭公告" title="关闭" @click="dismissAnnouncement">✕</button>
     </div>
 
     <main class="main">
-      <!-- 英雄区 + 热搜 -->
-      <div class="hero-row">
-        <div class="hero-noise" aria-hidden="true"></div>
-        <header class="hero">
-          <div class="hero-accent" aria-hidden="true"></div>
-          <div class="hero-content">
-            <div class="hero-badge">PanHub 搜索聚合引擎</div>
-            <h1 class="hero-title">
-              <span class="hero-title-line">一键检索</span>
-              <span class="hero-title-line hero-title-line--accent">全网网盘资源</span>
-            </h1>
-            <p class="hero-description">
-              聚合阿里云盘、夸克、百度网盘、115、迅雷等平台 · 快速、直达、少打扰
-            </p>
-            <ul class="hero-features" role="list">
-              <li class="hero-feature">实时聚合</li>
-              <li class="hero-feature">多平台覆盖</li>
-              <li class="hero-feature">结果去重</li>
-            </ul>
-          </div>
-          <div class="hero-shape" aria-hidden="true"></div>
-        </header>
-      </div>
+      <!-- 品牌区（对齐官方站 2026-09-22 三改）：居中一行「logo + 站名」，
+           下面一句描述，无卡片、无渐变底。搜索站的首屏只需要回答"这是谁、干什么"，
+           剩下的交给下面的搜索框 -->
+      <header class="hero">
+        <div class="hero-lockup">
+          <img
+            class="hero-logo"
+            :src="LOGO_URL"
+            alt=""
+            width="48"
+            height="48"
+            aria-hidden="true" />
+          <h1 class="hero-brand">PanHub 网盘搜索</h1>
+        </div>
+        <!-- 注意 span 之间不能换行：Vue 会吃掉元素之间仅含空白的换行文本节点，
+             分隔符会跟前后文字黏在一起；间距一律由 .hero-tagline__sep 的 margin 给 -->
+        <p class="hero-tagline"><span>10000000+ 网盘资源免费无偿分享</span><span class="hero-tagline__sep" aria-hidden="true">·</span><span class="hero-tagline__platforms">聚合夸克、百度、迅雷、UC、移动等网盘，</span><span>坚持做最全的网盘搜索引擎</span></p>
+      </header>
 
       <SearchBox
         v-model="kw"
@@ -76,7 +77,7 @@
           </span>
           <span class="stat-item">
             <span class="stat-label">用时</span>
-            <span class="stat-value">{{ elapsedMs }}ms</span>
+            <span class="stat-value">{{ elapsedSeconds }}s</span>
           </span>
           <span v-if="deepLoading && !paused" class="loading-indicator">
             <span class="pulse-dot"></span>
@@ -115,12 +116,14 @@
           <ResultGroup
             v-for="group in groupedResults"
             :key="group.type"
+            :type="group.type"
             :title="platformInfo(group.type).name"
             :color="platformInfo(group.type).color"
             :icon="platformInfo(group.type).icon"
             :items="sortedItems(group.items)"
             :expanded="filterPlatform !== 'all' || expandedSet.has(group.type)"
             :initial-visible="3"
+            :can-toggle-collapse="false"
             @toggle="handleToggle(group.type)" />
         </div>
       </section>
@@ -157,6 +160,18 @@
               <p>试试其他关键词，或稍后再试</p>
             </div>
           </div>
+          <div v-if="emptySuggestions.length > 0" class="empty-suggestions">
+            <span class="empty-suggestions__label">试试这些：</span>
+            <div class="empty-suggestions__tags">
+              <button
+                v-for="term in emptySuggestions"
+                :key="term"
+                class="empty-suggestions__tag"
+                @click="quickSearch(term)">
+                {{ term }}
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -166,17 +181,37 @@
         <span>{{ error }}</span>
       </section>
 
-      <!-- 豆瓣新片榜（搜索时隐藏，用 v-show 保留已加载数据） -->
-      <section v-show="!searched" class="douban-hot-section">
-        <DoubanHot @search="quickSearch" />
+      <!-- 推荐关键词快搜（对齐官方站 2026-09-22）：搜索时隐藏。
+           词表由官方站后台「热门关键词」配置下发（/api/hot-keywords），
+           组件挂载时拉一次 -->
+      <!-- v-show 而非 v-if：v-if 搜索时会销毁组件，重置回首页后重新挂载
+           （多拉一次词表、入场动画重放）；v-show 保留组件与已取到的词表 -->
+      <section v-show="!searched" class="hot-keyword-wrap">
+        <HotKeywordSection :on-search="quickSearch" />
       </section>
+
+      <!-- 网盘资源精选（对齐官方站 2026-09-22）：官方站后台维护的固定资源，
+           点开直接跳分享页由用户自己保存（不转存）。搜索时隐藏 -->
+      <section v-show="!searched" class="curated-wrap">
+        <CuratedResourceSection />
+      </section>
+
+      <!-- 资源合集（对齐官方站 2026-10-12）：1849 个精选资源直接放首页，
+           分类 chips + 分批加载；数据跨域取官方站，懒加载。搜索时隐藏 -->
+      <section v-show="!searched" id="resource-collection" class="collection-wrap">
+        <ResourceCollectionSection />
+      </section>
+
     </main>
 
     <footer class="site-footer">
       <span class="footer-copy">PanHub · 聚合搜索，不存储任何文件</span>
     </footer>
 
-    <TransferDialog />
+    <!-- 「获取」等待/复制弹窗（含积分不足看广告、限流、回退等全部状态） -->
+    <TransferStatusDialog />
+    <!-- 弹窗公告：内容来自官方站后台配置（/api/notice-popup），关闭时自动不弹 -->
+    <NoticeModal />
   </div>
 
   <!-- 全站 Toast -->
@@ -186,16 +221,24 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from "vue";
 import SearchBox from "./components/SearchBox.vue";
 import ResultGroup from "./components/ResultGroup.vue";
-import DoubanHot from "./components/DoubanHot.vue";
-import TransferDialog from "./components/TransferDialog.vue";
+import TransferStatusDialog from "./components/TransferStatusDialog.vue";
+import { useTransfer } from "./composables/useTransfer";
+import HotKeywordSection from "./components/HotKeywordSection.vue";
+import CuratedResourceSection from "./components/CuratedResourceSection.vue";
+import ResourceCollectionSection from "./components/ResourceCollectionSection.vue";
+import NoticeModal from "./components/NoticeModal.vue";
+import { API_BASE } from "./config";
 import { useSearch } from "./composables/useSearch";
 import { useAnnouncement } from "./composables/useAnnouncement";
 import { useToast } from "./composables/useToast";
+import { useDarkMode } from "./composables/useDarkMode";
+import { useHotKeywords } from "./composables/useHotKeywords";
 import { platformInfo } from "./config/platforms";
-import { checkSearchAuth, forceVerify } from "./api/auth";
+import { forceVerify } from "./api/auth";
+import { orderDriverGroups } from "./utils/driverPriority";
 import type { MergedLink } from "./types";
 
 // ===== 状态 =====
@@ -221,6 +264,10 @@ const {
   resetSearch,
 } = useSearch();
 
+// 用时展示：毫秒数是给开发看的，用户只关心「几秒」。
+// 保留一位小数（如 7.5s）——整数会把 1~2 秒档位压成同一个数字，看不出差别。
+const elapsedSeconds = computed(() => (elapsedMs.value / 1000).toFixed(1));
+
 const {
   items: announcementItems,
   visible: announcementVisible,
@@ -228,6 +275,16 @@ const {
   dismiss: dismissAnnouncement,
 } = useAnnouncement();
 const { toast } = useToast();
+const { init: initDarkMode } = useDarkMode();
+
+// 推荐词表（后台固定词表，与热词区块共用一次请求）
+const { keywords: hotKeywords, ensureLoaded: ensureHotKeywords } = useHotKeywords();
+// 空状态推荐词：取词表前 5 个（官方站 2026-09-23 口径，替代已下线的热搜统计）
+const emptySuggestions = computed(() => hotKeywords.value.slice(0, 5));
+
+// 站点 logo（与 index.html 的 favicon 同源）
+const LOGO_URL =
+  "https://cdn.jsdmirror.com/gh/wu529778790/img.shenzjd.com@master/blog/imgx-20260828-151509-5bk7.svg";
 
 const announcementIndex = ref(0);
 let rotateTimer: ReturnType<typeof setInterval> | null = null;
@@ -236,7 +293,49 @@ const currentAnnouncement = computed(
   () => announcementItems.value[announcementIndex.value] ?? null
 );
 
+// 公告跑马灯：单条一行放不下时左右来回滚动（hover 暂停），能放下就静止居中。
+// 是否滚动由实测宽度决定——不能只看字数，等宽字体与标点都会影响实际宽度。
+const viewportEl = ref<HTMLElement | null>(null);
+const textEl = ref<HTMLElement | null>(null);
+const scrollDistance = ref(0); // >0 表示当前条目超宽，需要来回滚动
+
+const scrollStyle = computed(() => {
+  if (scrollDistance.value <= 0) return {};
+  const duration = Math.max(6, Math.round(scrollDistance.value / 30));
+  return {
+    "--announce-scroll-distance": `-${scrollDistance.value}px`,
+    "--announce-scroll-duration": `${duration}s`,
+  };
+});
+
+/** 超宽判定：文本实际宽度超出视口可视宽度才启用左右滚动动画 */
+function measureScroll() {
+  const vp = viewportEl.value;
+  const tx = textEl.value;
+  if (!vp || !tx) {
+    scrollDistance.value = 0;
+    return;
+  }
+  const dist = Math.ceil(tx.scrollWidth - vp.clientWidth);
+  scrollDistance.value = dist > 4 ? dist : 0;
+}
+
+watch(announcementIndex, () => {
+  nextTick(measureScroll);
+});
+
+function onResize() {
+  if (announcementVisible.value) measureScroll();
+}
+
 // ===== 搜索 =====
+
+// 「获取」401 处理（对齐官方站 2026-09-24）：搜索对访客放开后，登录卡点收敛到
+// 「获取」——401 时直接吊起 wx-auth SDK 登录弹窗（等同手动点登录），
+// forceVerify 在登录成功（isVerified 置位）时返回 true，useTransfer 收到后
+// 自动重试本次获取——全程无需再点一次。模块级注册：ResultGroup 等无参调用
+// 触发的获取同样生效。
+useTransfer(() => forceVerify());
 
 /** 服务端 401：登录态失效 → 强制重新认证后重试 */
 let authRetrying = false;
@@ -278,9 +377,9 @@ async function onSearch() {
   if (!kw.value.trim()) return;
   if (paused.value) resetSearch();
   if (loading.value) return;
-  // 强制登录：未登录先完成验证，成功后再继续搜索
-  const authed = await checkSearchAuth();
-  if (!authed) return;
+  // 访客准入（对齐官方站 2026-09-24）：搜索不再强制登录，登录卡点收敛到
+  // 「获取」转存。匿名票据由 useSearch 在建连前自动拼在 URL 上
+  //（getAnonTicketSafe，fail-open：拿不到也照发，服务端按无票访客策略放行）。
   await doSearch();
 }
 
@@ -311,26 +410,28 @@ function fullReset() {
 
 // ===== 结果展示 =====
 
-/** 平台 pill 按结果数量降序（SSE 推送顺序不定，不能依赖 key 顺序） */
+/**
+ * 平台 pill 与分组顺序统一走 orderDriverGroups：接了转存的五家占前几位
+ * （五盘之间按结果数降序），其余盘型按结果数降序。
+ * SSE 推送时 merged 的 key 按首个结果到达顺序插入，次序随机，不能依赖 key 顺序。
+ */
 const platforms = computed(() => {
   const m = merged.value || {};
-  return Object.keys(m)
-    .filter((type) => (m[type]?.length ?? 0) > 0)
-    .sort((a, b) => (m[b]?.length ?? 0) - (m[a]?.length ?? 0));
+  return orderDriverGroups(
+    Object.keys(m).filter((type) => (m[type]?.length ?? 0) > 0),
+    (type) => m[type]?.length ?? 0
+  );
 });
 
 const groupedResults = computed(() => {
-  const list: Array<{ type: string; items: MergedLink[] }> = [];
   const source =
     filterPlatform.value === "all"
       ? merged.value
       : { [filterPlatform.value]: merged.value[filterPlatform.value] || [] };
-  for (const type of Object.keys(source)) {
-    if (!source[type]?.length) continue;
-    list.push({ type, items: source[type] || [] });
-  }
-  list.sort((a, b) => (b.items?.length ?? 0) - (a.items?.length ?? 0));
-  return list;
+  return orderDriverGroups(
+    Object.keys(source).filter((type) => (source[type]?.length ?? 0) > 0),
+    (type) => source[type]?.length ?? 0
+  ).map((type) => ({ type, items: source[type] || [] }));
 });
 
 function handleToggle(type: string) {
@@ -349,13 +450,23 @@ function sortedItems(items: MergedLink[]): MergedLink[] {
 // ===== 生命周期 =====
 
 onMounted(async () => {
-  loadAnnouncement().then(() => {
+  // 暗色模式：跟随系统主题实时变化（首屏由 index.html 阻塞脚本即时应用）
+  initDarkMode();
+  // 推荐词表（热词区块 + 空状态推荐词共用）：只在挂载时拉一次
+  void ensureHotKeywords();
+  // 窗口尺寸变化时重新判定公告是否需要滚动
+  window.addEventListener("resize", onResize);
+
+  loadAnnouncement().then(async () => {
     if (announcementItems.value.length > 1) {
       rotateTimer = setInterval(() => {
         announcementIndex.value =
           (announcementIndex.value + 1) % announcementItems.value.length;
       }, 6000);
     }
+    // 首条公告渲染完量一次宽度，决定是否需要来回滚动
+    await nextTick();
+    measureScroll();
   });
 
   // 从 URL 读取搜索词与类别，自动搜索（?q= 直访）
@@ -371,6 +482,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (rotateTimer) clearInterval(rotateTimer);
+  window.removeEventListener("resize", onResize);
 });
 </script>
 
@@ -467,6 +579,30 @@ onBeforeUnmount(() => {
   color: var(--primary);
   text-decoration: underline;
 }
+.announce-bar__text {
+  display: inline-block;
+  white-space: nowrap;
+}
+.announce-bar__text a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+/* 超宽来回滚动（alternate 往返）；hover 暂停方便阅读/点链接 */
+.announce-bar__text--scrolling {
+  animation: announceBounce var(--announce-scroll-duration, 12s) ease-in-out infinite alternate;
+  will-change: transform;
+}
+.announce-bar__viewport:hover .announce-bar__text--scrolling {
+  animation-play-state: paused;
+}
+@keyframes announceBounce {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(var(--announce-scroll-distance, -100px));
+  }
+}
 .announce-bar__close {
   flex-shrink: 0;
   background: none;
@@ -493,117 +629,56 @@ onBeforeUnmount(() => {
   gap: 24px;
 }
 
-/* ===== 英雄区 ===== */
-.hero-row {
-  display: flex;
-  align-items: stretch;
-  position: relative;
-  background: linear-gradient(145deg, rgba(15, 118, 110, 0.12) 0%, rgba(15, 118, 110, 0.04) 35%, rgba(245, 158, 11, 0.06) 70%, rgba(15, 118, 110, 0.08) 100%);
-  border-radius: 20px;
-  box-shadow: 0 4px 20px -4px rgba(15, 118, 110, 0.15);
-  overflow: hidden;
-}
-.hero-noise {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.04;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  mix-blend-mode: overlay;
-  z-index: 0;
-}
+/* ===== 品牌区（对齐官方站）：居中、无卡片无底色。一行「logo + 站名」48px 高，
+   下面一句描述；不加渐变底/阴影/圆角——越干净越像搜索站的首屏 ===== */
 .hero {
-  flex: 1;
-  min-width: 0;
-  padding: 24px 28px;
-  position: relative;
-  z-index: 1;
-}
-.hero-accent {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 6px;
-  height: 100%;
-  background: linear-gradient(180deg, var(--primary) 0%, var(--secondary) 50%, var(--primary) 100%);
-}
-.hero-content {
-  position: relative;
-  z-index: 2;
-  padding-left: 12px;
-}
-.hero-badge {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--primary);
-  margin-bottom: 10px;
-  padding: 6px 12px;
-  background: rgba(15, 118, 110, 0.12);
-  border: 1px solid rgba(15, 118, 110, 0.25);
-  border-radius: 8px;
-}
-.hero-title {
-  font-size: 36px;
-  font-weight: 800;
-  margin: 0 0 10px;
-  color: var(--text-primary);
-  letter-spacing: -0.04em;
-  line-height: 1.1;
-  max-width: 560px;
-}
-.hero-title-line {
-  display: block;
-}
-.hero-title-line--accent {
-  background: linear-gradient(120deg, var(--primary) 0%, #0d9488 40%, var(--secondary) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-.hero-description {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin: 0 0 16px;
-  line-height: 1.65;
-  max-width: 520px;
-}
-.hero-features {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px 20px;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 0;
+  text-align: center;
 }
-.hero-feature {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--primary-dark);
-  padding: 6px 12px;
-  background: var(--bg-input);
-  border: 1px solid rgba(15, 118, 110, 0.2);
-  border-radius: 10px;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+
+.hero-lockup {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
-.hero-feature:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.15);
-  border-color: rgba(15, 118, 110, 0.35);
+
+/* 不写死 border-radius / object-fit:fill：logo 是 512 方形 SVG（自带圆角），
+   一律等比缩放，绝不被容器拉扁 */
+.hero-logo {
+  display: block;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
 }
-.hero-shape {
-  position: absolute;
-  right: 8%;
-  bottom: 10%;
-  width: 120px;
-  height: 120px;
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.15) 0%, rgba(245, 158, 11, 0.08) 100%);
-  border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%;
-  filter: blur(24px);
-  pointer-events: none;
-  z-index: 0;
+
+.hero-brand {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--text-primary);
+}
+
+.hero-tagline {
+  margin: 0;
+  /* 860px：整句约 57 字，宽屏一行放得下；窄屏自然折成两行（居中，不显突兀） */
+  max-width: 860px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+/* 分隔符间距由 margin 给（模板里 span 之间不留换行，见模板块注释） */
+.hero-tagline__sep {
+  margin: 0 6px;
+  opacity: 0.65;
 }
 /* ===== 统计栏 ===== */
 .stats-bar {
@@ -838,6 +913,42 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   line-height: 1.6;
 }
+/* 空状态右侧的热搜推荐：与左侧图标区并排，窄屏时改为上下堆叠 */
+.empty-suggestions {
+  flex: 1 1 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  border-left: 1px solid var(--border-light);
+  padding-left: 40px;
+}
+.empty-suggestions__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+}
+.empty-suggestions__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.empty-suggestions__tag {
+  font-size: 14px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.empty-suggestions__tag:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.06);
+}
 /* ===== 错误 ===== */
 .error-alert {
   display: flex;
@@ -891,9 +1002,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
-  .hero-row {
-    flex-direction: column;
-  }
   .main {
     padding: 16px;
   }
@@ -904,14 +1012,15 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 640px) {
-  .hero {
-    padding: 24px 18px;
+  .hero-logo {
+    width: 40px;
+    height: 40px;
   }
-  .hero-content {
-    padding-left: 4px;
+  .hero-brand {
+    font-size: 24px;
   }
-  .hero-title {
-    font-size: 26px;
+  .hero-tagline__platforms {
+    display: none;
   }
   .stats-bar {
     padding: 12px;
@@ -925,6 +1034,13 @@ onBeforeUnmount(() => {
   .empty-icon {
     width: 64px;
     height: 64px;
+  }
+  .empty-suggestions {
+    width: 100%;
+    border-left: none;
+    padding-left: 0;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-light);
   }
 }
 

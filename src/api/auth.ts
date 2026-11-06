@@ -14,7 +14,7 @@
  * 登录流程与主站完全一致：关注公众号 + 验证码（或小程序扫码），强制不可跳过。
  */
 import { ref, watch } from "vue";
-import { WX_AUTH_API_BASE, WX_AUTH_SDK_URL } from "../config";
+import { WX_AUTH_API_BASE, WX_AUTH_SDK_URLS } from "../config";
 
 export interface WxAuthUser {
   openid?: string;
@@ -34,6 +34,13 @@ export interface WxAuthSDK {
   getToken?(): string | null;
   onVerified(user: any): void;
   onError(error: any): void;
+  /**
+   * 匿名票据（SDK ≥1.2.44，2026-09-24 访客准入）：
+   * init() 时已自动预签一张票存 localStorage（180 天有效），
+   * 这里取现成的（签发失败/断网返回 null —— fail-open）。
+   * 旧版本 SDK 没有该方法（运行时用可选调用兜底）。
+   */
+  getOrCreateAnonTicket?: () => Promise<string | null>;
 }
 
 declare global {
@@ -50,13 +57,16 @@ const TOKEN_COOKIE = "wxauth-token";
 let sdkPromise: Promise<WxAuthSDK> | null = null;
 
 /**
- * 等待 UMD 全局单例就绪；脚本缺失时自行补插（1.5s 后仍未挂载）。
+ * 等待 UMD 全局单例就绪；脚本缺失时自行按 CDN 列表补插（1.5s 后仍未挂载，
+ * 依次尝试 unpkg → jsdelivr，单个源 6s 无响应切下一个）。
  * 加载失败抛出异常，调用方决定降级行为，下次调用可重试。
  */
 export function resolveWxAuth(timeoutMs = 10000): Promise<WxAuthSDK> {
   if (sdkPromise) return sdkPromise;
   sdkPromise = new Promise<WxAuthSDK>((resolve, reject) => {
     const startedAt = Date.now();
+    /** CDN 补插进度：index.html 引导脚本加载失败后，这里从下一个源继续 */
+    let fallbackIdx = 0;
     const poll = () => {
       if (window.WxAuth) return resolve(window.WxAuth);
       if (Date.now() - startedAt >= timeoutMs) {
@@ -65,11 +75,12 @@ export function resolveWxAuth(timeoutMs = 10000): Promise<WxAuthSDK> {
       }
       if (
         Date.now() - startedAt >= 1500 &&
-        !document.getElementById(SDK_SCRIPT_ID)
+        !document.getElementById(SDK_SCRIPT_ID) &&
+        fallbackIdx < WX_AUTH_SDK_URLS.length
       ) {
         const el = document.createElement("script");
         el.id = SDK_SCRIPT_ID;
-        el.src = WX_AUTH_SDK_URL;
+        el.src = WX_AUTH_SDK_URLS[fallbackIdx++];
         document.head.appendChild(el);
       }
       setTimeout(poll, 50);
@@ -77,6 +88,54 @@ export function resolveWxAuth(timeoutMs = 10000): Promise<WxAuthSDK> {
     poll();
   });
   return sdkPromise;
+}
+
+// ---------------------------------------------------------------------------
+// 匿名票据（对齐官方站 2026-09-24 访客准入）
+//
+// 搜索对未登录访客放开后，建 SSE 连接前要把票据拼在 URL ?at= 上。刻意不走
+// Cookie：跨站部署写不回 Cookie，统一 localStorage + URL 参数；且流式连接
+// 不能靠「401 再补签重试」（EventSource/fetch 流遇错重连会抖成风暴），
+// 票必须在建连前就位（init 预签已保证，这里只是取现成的）。
+// ---------------------------------------------------------------------------
+
+const ANON_TICKET_RETRY_MS = 60_000;
+let anonTicketPromise: Promise<string | null> | null = null;
+let anonTicketFailedAt = 0;
+
+/**
+ * 安全获取匿名票据（任何失败返回 null —— fail-open，是否放行无票请求由
+ * 服务端定夺：观察期放行 + 记日志）。失败缓存 60s，防每次搜索都空撞 SDK。
+ */
+export async function getAnonTicketSafe(timeoutMs = 3000): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  if (anonTicketPromise) return anonTicketPromise;
+  if (Date.now() - anonTicketFailedAt < ANON_TICKET_RETRY_MS) return null;
+  anonTicketPromise = (async () => {
+    try {
+      const WxAuth = await resolveWxAuth();
+      const fn = WxAuth.getOrCreateAnonTicket;
+      if (typeof fn !== "function") {
+        // 旧版 SDK（<1.2.44）：无票据能力，按无票处理
+        return null;
+      }
+      const t = await Promise.race([
+        Promise.resolve(fn.call(WxAuth)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+      ]);
+      if (typeof t !== "string" || t.length === 0) {
+        throw new Error("匿名票据签发失败或为空");
+      }
+      return t;
+    } catch (e) {
+      anonTicketFailedAt = Date.now();
+      console.warn("[wx-auth] 匿名票据获取失败（按无票请求发送）", e);
+      return null;
+    } finally {
+      anonTicketPromise = null; // 允许下次调用重试（成功路径读 localStorage，开销极小）
+    }
+  })();
+  return anonTicketPromise;
 }
 
 // ===== token 读写 =====
